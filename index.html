@@ -32,6 +32,10 @@
      material Apple e no scrim do dialog como foco — intencionais),
      deslop-ignore-file 24 (ícones são um set stroke 2px consistente,
      não arte AI — intencional).
+   - Pesquisa cantos/cards (2026): corner-shape squircle progressivo,
+     cards com UMA elevação (sombra, sem borda — M3 filled/elevated),
+     borda só em inputs/tabela/divisórias, raios concêntricos
+     (outer = inner + gap) onde há aninhamento colado.
    ============================================================ */
 :root{
   padding-top:env(safe-area-inset-top,0px);
@@ -180,7 +184,7 @@ button:disabled{opacity:.5; cursor:not-allowed; transform:none}
 
 /* ---------- Resumo: barra segmentada (evita hero-metric em cards idênticos) ---------- */
 .summary{
-  background:var(--card); border:1px solid var(--line); border-radius:var(--r);
+  background:var(--card); border-radius:var(--r);
   box-shadow:var(--shadow-1);
   display:grid; grid-template-columns:repeat(4,1fr);
   overflow:hidden;
@@ -216,10 +220,10 @@ button:disabled{opacity:.5; cursor:not-allowed; transform:none}
 /* ---------- Carrinhos ---------- */
 .carts{display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:14px}
 .cart{
-  background:var(--card); border:1px solid var(--line); border-radius:var(--r);
+  background:var(--card); border-radius:var(--r);
   padding:18px; display:flex; flex-direction:column; gap:8px;
   box-shadow:var(--shadow-1);
-  transition:transform 200ms var(--ease-out), box-shadow 220ms var(--ease-out), border-color 200ms var(--ease-out);
+  transition:transform 200ms var(--ease-out), box-shadow 220ms var(--ease-out);
   opacity:0; transform:translateY(10px) scale(.985);
   animation:rise 380ms var(--ease-out) forwards;
 }
@@ -229,7 +233,7 @@ button:disabled{opacity:.5; cursor:not-allowed; transform:none}
 .carts .cart:nth-child(5){animation-delay:160ms}
 .carts .cart:nth-child(6){animation-delay:200ms}
 @media(hover:hover) and (pointer:fine){
-  .cart:hover{transform:translateY(-2px); box-shadow:var(--shadow-2); border-color:var(--line-strong)}
+  .cart:hover{transform:translateY(-2px); box-shadow:var(--shadow-2)}
 }
 .cart-top{display:flex; align-items:center; justify-content:space-between; gap:10px}
 .cart-id{display:flex; align-items:center; gap:10px; min-width:0}
@@ -254,7 +258,7 @@ button:disabled{opacity:.5; cursor:not-allowed; transform:none}
 /* .cart.busy sem wash: o sinal de "em uso" é o pill + dot (kill-ai-slop 06) */
 
 /* skeleton */
-.skel{border-radius:var(--r); border:1px solid var(--line); background:var(--card); padding:18px; display:grid; gap:10px}
+.skel{border-radius:var(--r); background:var(--card); box-shadow:var(--shadow-1); padding:18px; display:grid; gap:10px}
 .skel i{display:block; height:14px; border-radius:8px; background:linear-gradient(90deg, var(--bg-soft), var(--line), var(--bg-soft)); background-size:200% 100%; animation:shimmer 1.2s linear infinite}
 @keyframes shimmer{to{background-position:-200% 0}}
 
@@ -342,6 +346,16 @@ label small{font-weight:500; color:var(--mut)}
 #toast.on{opacity:1; transform:translateX(-50%) translateY(0) scale(1); filter:blur(0)}
 #toast svg{width:16px; height:16px; flex:none}
 @starting-style{ #toast.on{opacity:0; transform:translateX(-50%) translateY(12px) scale(.97)} }
+
+/* ---------- Squircle progressivo (corner-shape) ----------
+   Chrome/Edge 139+ renderizam o canto contínuo (parece mais cheio e
+   arredondado que o mesmo border-radius); Firefox/Safari caem no
+   border-radius acima, sem quebra. Pills continuam round. */
+@supports (corner-shape: squircle) {
+  .cart, .summary, .tablebox, .skel, dialog,
+  button, input, select, textarea,
+  .brand-mark, .cart-ic, .summary-ic, .empty-ic { corner-shape: squircle; }
+}
 
 footer{max-width:1200px; margin:26px auto 0; padding:0 20px; color:var(--mut); font-size:.82rem; display:flex; gap:8px; flex-wrap:wrap; justify-content:space-between}
 
