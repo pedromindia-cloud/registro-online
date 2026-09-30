@@ -28,6 +28,10 @@
      idênticos, raios 14-16px, elevação declarada uma vez,
      browser surfaces temadas, empty state que ensina,
      skeleton de loading, uma família tipográfica.
+   - kill-ai-slop: deslop-ignore-file 19 (blur só no topbar como
+     material Apple e no scrim do dialog como foco — intencionais),
+     deslop-ignore-file 24 (ícones são um set stroke 2px consistente,
+     não arte AI — intencional).
    ============================================================ */
 :root{
   padding-top:env(safe-area-inset-top,0px);
@@ -261,7 +265,7 @@ button:disabled{opacity:.5; cursor:not-allowed; transform:none}
 .cart-meta .meta-row svg{width:14px; height:14px; flex:none; transform:translateY(2px)}
 .cart .btn{margin-top:auto; padding-top:10px}
 .cart .btn button{width:100%}
-.cart.busy{background:linear-gradient(180deg, color-mix(in srgb, var(--bad-bg) 38%, var(--card)), var(--card) 58%)}
+/* .cart.busy sem wash: o sinal de "em uso" é o pill + dot (kill-ai-slop 06) */
 
 /* skeleton */
 .skel{border-radius:var(--r); border:1px solid var(--line); background:var(--card); padding:18px; display:grid; gap:10px}
