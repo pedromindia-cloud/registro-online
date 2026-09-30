@@ -13,6 +13,12 @@
    - Apple Design: material translúcido, feedback no pointer-down,
      tipografia com tracking/leading por tamanho, reduced-motion,
      enters/exits no mesmo caminho, transform-origin consciente.
+   - Apple Design (pass fluid): sheets arrastáveis com Pointer Events +
+     1:1 tracking, histerese 10px, velocity handoff + projeção de
+     momentum (desaceleração 0.998), rubber-band nos limites, settle
+     via WAAPI a partir do valor live (interrompível), haptics
+     (Vibration API) em commit/erro no mesmo frame do visual,
+     tap sem delay (touch-action + tap-highlight), Dynamic Type.
    - Emil Design: decision framework (só anima o ocasional),
      ease-out custom, <300ms, só transform/opacity/filter,
      :active scale(.97), nunca scale(0), @starting-style,
@@ -82,7 +88,7 @@
 }
 *{box-sizing:border-box}
 [hidden]{display:none!important}
-html{scroll-behavior:smooth}
+html{scroll-behavior:smooth; -webkit-text-size-adjust:100%; text-size-adjust:100%}
 body{
   margin:0; background:var(--bg); color:var(--ink);
   font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
@@ -138,15 +144,18 @@ input,textarea,select{caret-color:var(--brand)}
 }
 .top-actions{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
 
-/* ---------- Buttons (Emil: scale .97, 160ms, ease-out) ---------- */
+/* ---------- Buttons (Emil: scale .97, 160ms, ease-out / Apple §1: resposta no pointer-down) ---------- */
 button{
   font:inherit; cursor:pointer; color:var(--ink);
   background:var(--card); border:1px solid var(--line-strong);
   border-radius:12px; padding:10px 16px; font-weight:650; font-size:.95rem;
   letter-spacing:-0.006em;
-  transition:transform 160ms var(--ease-out), background 160ms var(--ease-out),
+  touch-action:manipulation; -webkit-tap-highlight-color:transparent;
+  user-select:none; -webkit-user-select:none;
+  transition:transform 100ms ease-out, background 160ms var(--ease-out),
     border-color 160ms var(--ease-out), box-shadow 200ms var(--ease-out), filter 200ms var(--ease-out);
 }
+input,select,textarea{touch-action:manipulation}
 @media(hover:hover) and (pointer:fine){
   button:hover{border-color:var(--brand); box-shadow:var(--shadow-1)}
 }
@@ -303,16 +312,22 @@ td.act{display:flex; gap:8px; flex-wrap:wrap; min-width:270px}
 .empty strong{color:var(--ink); font-size:1rem; letter-spacing:-0.01em}
 .empty p{margin:0; max-width:52ch; font-size:.92rem}
 
-/* ---------- Dialogs (modal: origin center, mesmo caminho in/out) ---------- */
+/* ---------- Dialogs (modal: origin center, mesmo caminho in/out / Apple §§3,7: sheet interrompível) ---------- */
 dialog{
   border:1px solid var(--line); border-radius:20px; padding:0;
   width:min(540px,94vw); background:var(--card); color:var(--ink);
   box-shadow:var(--shadow-float);
+  transform-origin:center; /* modal ancora no centro, não no trigger (exceção Apple §7) */
   opacity:0; transform:translateY(12px) scale(.96); filter:blur(2px);
   transition:opacity 240ms var(--ease-out), transform 280ms var(--ease-drawer), filter 240ms var(--ease-out), overlay 280ms var(--ease-out) allow-discrete, display 280ms var(--ease-out) allow-discrete;
 }
-dialog[open]{opacity:1; transform:translateY(0) scale(1); filter:blur(0)}
+dialog[open]{opacity:1; transform:translateY(0) scale(1); filter:blur(0); will-change:transform,opacity,filter}
+dialog.dragging{transition:none; will-change:transform} /* tracking 1:1 com o dedo (Apple §2) */
 @starting-style{ dialog[open]{opacity:0; transform:translateY(12px) scale(.95); filter:blur(2px)} }
+/* Alça do sheet: área de arrasto com histerese, sem conflito com inputs (Apple §10) */
+.sheet-handle{touch-action:none; cursor:grab; padding:12px 0 4px; display:flex; justify-content:center}
+.sheet-handle span{width:44px; height:5px; border-radius:99px; background:var(--line-strong); opacity:.8}
+dialog.dragging .sheet-handle{cursor:grabbing}
 dialog::backdrop{background:rgba(8,18,20,.5); backdrop-filter:blur(6px); -webkit-backdrop-filter:blur(6px)}
 form{padding:22px; display:grid; gap:14px}
 form h3{margin:0; font-size:1.12rem; letter-spacing:-0.018em; line-height:1.25}
@@ -466,6 +481,7 @@ footer{max-width:1200px; margin:26px auto 0; padding:0 20px; color:var(--mut); f
 </footer>
 
 <dialog id="dlg">
+  <div class="sheet-handle" data-sheet-handle aria-hidden="true"><span></span></div>
   <form id="form" novalidate>
     <h3 id="dlgTitulo">Nova retirada</h3>
     <p class="hint">O carrinho fica marcado como “em uso” até a devolução.</p>
@@ -491,6 +507,7 @@ footer{max-width:1200px; margin:26px auto 0; padding:0 20px; color:var(--mut); f
   </form>
 </dialog>
 <dialog id="dlgDev">
+  <div class="sheet-handle" data-sheet-handle aria-hidden="true"><span></span></div>
   <form id="formDev" novalidate>
     <h3 id="devTitulo">Registrar devolução</h3>
     <p class="hint">A devolução precisa ser na mesma data/aula ou depois da retirada.</p>
@@ -561,7 +578,20 @@ var SENHA = '';
   function devolvido(r) { return !!r.devolucaoData; }
   function registroAberto(id) { for (var i = 0; i < registros.length; i++) if (registros[i].carrinhoId === id && !devolvido(registros[i])) return registros[i]; return null; }
   function achar(id) { for (var i = 0; i < registros.length; i++) if (registros[i].id === id) return registros[i]; return null; }
+  /* Apple §13 multimodal: háptico dispara no mesmo frame do visual, só em commit/erro/snap. */
+  function haptic(kind) {
+    try {
+      if (!('vibrate' in navigator)) return;
+      if (kind === 'error') navigator.vibrate([12, 40, 12]);
+      else if (kind === 'success') navigator.vibrate(12);
+      else navigator.vibrate(8);
+    } catch (e) {}
+  }
+  function reduzMovimento() {
+    try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { return false; }
+  }
   function avisar(m, ok) {
+    haptic(ok === false ? 'error' : 'success');
     elToast.innerHTML = (ok === false
       ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5h0"/></svg><span></span>'
       : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg><span></span>') ;
@@ -575,6 +605,8 @@ var SENHA = '';
     return 'Não foi possível salvar (' + (k || (e && e.message) || 'erro') + '). Tente de novo.';
   }
   function badge(r) { return devolvido(r) ? '<span class="badge b-dev"><span class="dot"></span>Devolvido</span>' : '<span class="badge b-bad"><span class="dot"></span>Em uso</span>'; }
+  /* Erro inline de validação: nomeia o problema (Impeccable) + háptico de erro (Apple §13). */
+  function campoInvalido(elErro, msg, foco) { haptic('error'); elErro.textContent = msg; if (foco && foco.focus) foco.focus(); }
   function setConn(txt, online) {
     elConexaoTxt.textContent = txt;
     elConexao.classList.toggle('online', !!online);
@@ -657,12 +689,12 @@ var SENHA = '';
     ev.preventDefault();
     var id = parseInt(elFCarrinho.value, 10), turma = elFTurma.value.trim(), resp = elFResp.value.trim();
     var qtd = parseInt(elFQtd.value, 10), data = elFData.value, aula = parseInt(elFAula.value, 10), obs = elFObs.value.trim();
-    if (!id) { elFErro.textContent = 'Escolha um carrinho.'; return; }
-    if (!turma) { elFErro.textContent = 'Informe a turma.'; elFTurma.focus(); return; }
-    if (!resp) { elFErro.textContent = 'Informe o responsável.'; elFResp.focus(); return; }
-    if (isNaN(qtd) || qtd < 1 || qtd > POR) { elFErro.textContent = 'A quantidade deve ficar entre 1 e ' + POR + '.'; elFQtd.focus(); return; }
-    if (!data) { elFErro.textContent = 'Informe a data da retirada.'; elFData.focus(); return; }
-    if (!(aula >= 1 && aula <= 5)) { elFErro.textContent = 'Escolha a aula da retirada.'; elFAula.focus(); return; }
+    if (!id) { campoInvalido(elFErro, 'Escolha um carrinho.'); return; }
+    if (!turma) { campoInvalido(elFErro, 'Informe a turma.', elFTurma); return; }
+    if (!resp) { campoInvalido(elFErro, 'Informe o responsável.', elFResp); return; }
+    if (isNaN(qtd) || qtd < 1 || qtd > POR) { campoInvalido(elFErro, 'A quantidade deve ficar entre 1 e ' + POR + '.', elFQtd); return; }
+    if (!data) { campoInvalido(elFErro, 'Informe a data da retirada.', elFData); return; }
+    if (!(aula >= 1 && aula <= 5)) { campoInvalido(elFErro, 'Escolha a aula da retirada.', elFAula); return; }
     var corpo = { carrinhoId: id, turma: turma, responsavel: resp, quantidade: qtd, observacao: obs, data: data, aula: aula };
     elBtnSalvar.disabled = true;
     try {
@@ -670,17 +702,17 @@ var SENHA = '';
         var reg = achar(editandoId);
         if (reg && devolvido(reg)) {
           var dd = elFDevData.value, da = parseInt(elFDevAula.value, 10);
-          if (!dd || !(da >= 1 && da <= 5) || chave(dd, da) < chave(data, aula)) { elFErro.textContent = 'Informe a devolução (data e aula) igual ou posterior à retirada.'; return; }
+          if (!dd || !(da >= 1 && da <= 5) || chave(dd, da) < chave(data, aula)) { campoInvalido(elFErro, 'Informe a devolução (data e aula) igual ou posterior à retirada.'); return; }
           corpo.devolucaoData = dd; corpo.devolucaoAula = da;
         }
         await colecao.doc(editandoId).update(corpo);
         elDlg.close(); avisar('Registro atualizado.'); return;
       }
-      if (registroAberto(id)) { elFErro.textContent = nomeCarrinho(id) + ' já está em uso.'; return; }
+      if (registroAberto(id)) { campoInvalido(elFErro, nomeCarrinho(id) + ' já está em uso.'); return; }
       corpo.devolucaoData = null; corpo.devolucaoAula = null; corpo.criadoEm = Date.now();
       await colecao.add(corpo);
       elDlg.close(); avisar(nomeCarrinho(id) + ' retirado por ' + turma + '.');
-    } catch (e) { elFErro.textContent = erroEscrita(e); }
+    } catch (e) { campoInvalido(elFErro, erroEscrita(e)); }
     finally { elBtnSalvar.disabled = false; }
   });
 
@@ -696,13 +728,13 @@ var SENHA = '';
     ev.preventDefault();
     var r = achar(devId), dd = elDData.value, da = parseInt(elDAula.value, 10);
     if (!r) { elDlgDev.close(); return; }
-    if (!dd) { elDErro.textContent = 'Informe a data da devolução.'; return; }
-    if (!(da >= 1 && da <= 5)) { elDErro.textContent = 'Escolha a aula da devolução.'; return; }
-    if (chave(dd, da) < chave(r.data, r.aula)) { elDErro.textContent = 'A devolução não pode ser antes da retirada (' + rotulo(r.data, r.aula) + ').'; return; }
+    if (!dd) { campoInvalido(elDErro, 'Informe a data da devolução.'); return; }
+    if (!(da >= 1 && da <= 5)) { campoInvalido(elDErro, 'Escolha a aula da devolução.'); return; }
+    if (chave(dd, da) < chave(r.data, r.aula)) { campoInvalido(elDErro, 'A devolução não pode ser antes da retirada (' + rotulo(r.data, r.aula) + ').'); return; }
     try {
       await colecao.doc(devId).update({ devolucaoData: dd, devolucaoAula: da, devolvidoEm: Date.now() });
       elDlgDev.close(); avisar(nomeCarrinho(r.carrinhoId) + ' devolvido e disponível.');
-    } catch (e) { elDErro.textContent = erroEscrita(e); }
+    } catch (e) { campoInvalido(elDErro, erroEscrita(e)); }
   });
   $('dCancelar').addEventListener('click', function () { elDlgDev.close(); });
   $('btnCancelar').addEventListener('click', function () { elDlg.close(); });
@@ -725,6 +757,114 @@ var SENHA = '';
   }
   elCarts.addEventListener('click', tratarClique); elTbody.addEventListener('click', tratarClique);
   elBusca.addEventListener('input', renderTabela); elFiltro.addEventListener('change', renderTabela);
+
+  /* ---------- Sheets arrastáveis (Apple §§2-6,9,10) ----------
+     1:1 tracking com Pointer Events + captura; histerese de 10px antes
+     de assumir o arrasto; ignora multi-toque; rubber-band ao passar do
+     topo; no release, projeta o momentum (desaceleração 0.998, sample
+     WWDC) e decide entre dismiss e snap; o settle é via WAAPI partindo
+     do valor live, logo pode ser agarrado e revertido no meio. */
+  function rubberband(overshoot, dimension, constant) {
+    if (!dimension) dimension = 400;
+    if (!constant) constant = 0.55;
+    return (overshoot * dimension * constant) / (dimension + constant * Math.abs(overshoot));
+  }
+  function project(initialVelocity, decelerationRate) {
+    if (decelerationRate == null) decelerationRate = 0.998;
+    return (initialVelocity / 1000) * decelerationRate / (1 - decelerationRate);
+  }
+  function liveTranslateY(el) {
+    try {
+      var m = new DOMMatrixReadOnly(getComputedStyle(el).transform);
+      return m.m42 || 0;
+    } catch (e) { return 0; }
+  }
+  function enableSheetDrag(dialog) {
+    var handle = dialog.querySelector('[data-sheet-handle]');
+    if (!handle) return;
+    var dragging = false, committed = false, pointerId = null;
+    var startY = 0, sheetY = 0, hist = [];
+    function cancelSettleToLive() {
+      // Interrompe a animação partindo do valor em tela, sem salto (Apple §3).
+      try {
+        dialog.getAnimations().forEach(function (a) { try { a.commitStyles(); a.cancel(); } catch (e) {} });
+      } catch (e) {}
+      sheetY = liveTranslateY(dialog);
+    }
+    handle.addEventListener('pointerdown', function (ev) {
+      if (!dialog.open || ev.isPrimary === false) return;
+      if (ev.pointerType === 'mouse' && ev.button !== 0) return;
+      cancelSettleToLive();
+      dragging = true; committed = false; pointerId = ev.pointerId;
+      startY = ev.clientY; hist = [{ y: sheetY, t: performance.now() }];
+      try { handle.setPointerCapture(ev.pointerId); } catch (e) {}
+      ev.preventDefault();
+    });
+    handle.addEventListener('pointermove', function (ev) {
+      if (!dragging || ev.pointerId !== pointerId) return;
+      var dy = ev.clientY - startY;
+      if (!committed) {
+        if (Math.abs(dy) < 10) return; // histerese: tap não vira arrasto
+        committed = true;
+        dialog.classList.add('dragging');
+      }
+      var y = sheetY + dy;
+      if (y < 0) y = rubberband(y, dialog.getBoundingClientRect().height || 400); // resiste, não trava
+      dialog.style.transform = 'translateY(' + y + 'px)';
+      var now = performance.now();
+      hist.push({ y: y, t: now });
+      while (hist.length > 2 && now - hist[0].t > 120) hist.shift();
+      ev.preventDefault();
+    });
+    function endDrag(ev) {
+      if (!dragging || (ev && ev.pointerId !== pointerId)) return;
+      dragging = false; pointerId = null;
+      if (!dialog.open || !committed) return; // foi só um tap na alça
+      var y = liveTranslateY(dialog);
+      var v = 0;
+      if (hist.length > 1) {
+        var a = hist[0], b = hist[hist.length - 1], dt = (b.t - a.t) / 1000;
+        if (dt > 0) v = (b.y - a.y) / dt; // px/s, positivo para baixo
+      }
+      dialog.classList.remove('dragging');
+      var projected = y + project(Math.max(0, v));
+      var querFechar = v > 900 || y > 130 || projected > 240; // sinal da velocidade decide, não só posição
+      if (reduzMovimento()) { // sem vestibular: fecha ou volta seco
+        if (querFechar) { haptic('success'); dialog.close(); }
+        else dialog.style.transform = '';
+        hist = [];
+        return;
+      }
+      if (querFechar) {
+        haptic('success'); // commit do gesto no mesmo frame do visual
+        var saida = Math.max(window.innerHeight, dialog.getBoundingClientRect().height * 2);
+        var dist = Math.max(80, saida - y);
+        var dur = Math.max(180, Math.min(420, v > 50 ? (dist / v) * 1000 : 280));
+        var anim = dialog.animate(
+          [{ transform: 'translateY(' + y + 'px)' }, { transform: 'translateY(' + saida + 'px)' }],
+          { duration: dur, easing: 'cubic-bezier(.32,.72,0,1)', fill: 'forwards' }
+        );
+        anim.onfinish = function () { try { dialog.close(); } catch (e) {} };
+      } else {
+        var snap = dialog.animate(
+          [{ transform: 'translateY(' + y + 'px)' }, { transform: 'translateY(0px)' }],
+          { duration: 320, easing: 'cubic-bezier(.32,.72,0,1)', fill: 'none' }
+        );
+        snap.onfinish = function () { dialog.style.transform = ''; };
+      }
+      hist = [];
+    }
+    handle.addEventListener('pointerup', endDrag);
+    handle.addEventListener('pointercancel', endDrag);
+    dialog.addEventListener('close', function () {
+      try { dialog.getAnimations().forEach(function (a) { try { a.cancel(); } catch (e) {} }); } catch (e) {}
+      dialog.classList.remove('dragging');
+      dialog.style.transform = '';
+      dragging = false; committed = false; hist = [];
+    });
+  }
+  enableSheetDrag(elDlg);
+  enableSheetDrag(elDlgDev);
 
   /* ---------- CSV ---------- */
   $('btnCsv').addEventListener('click', async function () {
