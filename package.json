@@ -1,0 +1,6 @@
+{
+  "name": "registro-online",
+  "version": "2.0.0",
+  "description": "Carrinhos de Chromebooks — registro online por carrinho e aula (Firebase Firestore)",
+  "type": "module"
+}
