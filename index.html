@@ -459,8 +459,8 @@ footer{max-width:1200px; margin:26px auto 0; padding:0 20px; color:var(--mut); f
     </div>
     <select id="filtro" aria-label="Filtrar por status">
       <option value="todos">Todos os registros</option>
-      <option value="uso">Em uso</option>
-      <option value="devolvido">Devolvidos</option>
+      <option value="uso">Em uso / reservados</option>
+      <option value="devolvido">Devolvidos / concluídos</option>
     </select>
     <button id="btnCsv"><span class="btn-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M4 21h16"/></svg><span>Exportar CSV</span></span></button>
   </div>
@@ -487,9 +487,10 @@ footer{max-width:1200px; margin:26px auto 0; padding:0 20px; color:var(--mut); f
   <div class="sheet-handle" data-sheet-handle aria-hidden="true"><span></span></div>
   <form id="form" novalidate>
     <h3 id="dlgTitulo">Nova retirada</h3>
-    <p class="hint">O carrinho fica marcado como “em uso” até a devolução.</p>
+    <p class="hint">Você pode agendar para hoje ou para frente e já deixar a devolução marcada. O carrinho só fica “em uso” no período; fora disso aparece como “reservado” ou “disponível”.</p>
     <label>Carrinho
       <select id="fCarrinho" required></select>
+      <small id="regraHint" style="font-weight:500;color:var(--mut)"></small>
     </label>
     <div class="row">
       <label>Turma <input id="fTurma" required maxlength="60" placeholder="Ex.: 1º Ano A" autocomplete="off"></label>
@@ -500,7 +501,7 @@ footer{max-width:1200px; margin:26px auto 0; padding:0 20px; color:var(--mut); f
       <label>Data da retirada <input id="fData" type="date" required></label>
     </div>
     <label>Aula da retirada <select id="fAula" required><option value="">Escolha…</option><option value="1">1ª aula</option><option value="2">2ª aula</option><option value="3">3ª aula</option><option value="4">4ª aula</option><option value="5">5ª aula</option></select></label>
-    <div class="row" id="lblDev" hidden><label>Data da devolução <input id="fDevData" type="date"></label><label>Aula da devolução <select id="fDevAula"><option value="">Escolha…</option><option value="1">1ª aula</option><option value="2">2ª aula</option><option value="3">3ª aula</option><option value="4">4ª aula</option><option value="5">5ª aula</option></select></label></div>
+    <div class="row" id="lblDev"><label>Data da devolução <small>Opcional — preencha para agendar</small><input id="fDevData" type="date"></label><label>Aula da devolução <small>Opcional</small><select id="fDevAula"><option value="">Escolha…</option><option value="1">1ª aula</option><option value="2">2ª aula</option><option value="3">3ª aula</option><option value="4">4ª aula</option><option value="5">5ª aula</option></select></label></div>
     <label>Observação <small>Opcional — ex.: fone faltando, teclado com defeito</small><textarea id="fObs" rows="2" maxlength="300" placeholder="Opcional"></textarea></label>
     <p class="err" id="fErro" role="alert"></p>
     <div class="foot">
@@ -579,8 +580,89 @@ var SENHA = '';
   function chave(d, a) { return d + '-' + a; }
   function nomeCarrinho(id) { return carrinhos[id - 1].nome; }
   function devolvido(r) { return !!r.devolucaoData; }
-  function registroAberto(id) { for (var i = 0; i < registros.length; i++) if (registros[i].carrinhoId === id && !devolvido(registros[i])) return registros[i]; return null; }
   function achar(id) { for (var i = 0; i < registros.length; i++) if (registros[i].id === id) return registros[i]; return null; }
+  /* Mantido por compatibilidade: antes qualquer registro sem devolução bloqueava o carrinho.
+     Agora o bloqueio é por intervalo de datas/aulas (permite agendar para frente). */
+  function registroAberto(id) { return registroAtivoAgora(id); }
+  function registroAtivoAgora(id, refHoje) {
+    var h = refHoje || hoje();
+    for (var i = 0; i < registros.length; i++) {
+      var r = registros[i];
+      if (r.carrinhoId === id && cobreHoje(r, h)) return r;
+    }
+    return null;
+  }
+  /* ---------- Agendamento por período + regras por carrinho ---------- */
+  /* 1 = 6º ano · 2 = 7º ano · 3 = 8º ano · 4 = 9º ano
+     5 = 3º ao 5º ano na seg/ter, reserva livre nos demais dias · 6 = reserva livre */
+  var REGRAS = {
+    1: { titulo: '6º ano', anos: [6] },
+    2: { titulo: '7º ano', anos: [7] },
+    3: { titulo: '8º ano', anos: [8] },
+    4: { titulo: '9º ano', anos: [9] },
+    5: { titulo: '3º ao 5º ano (seg/ter) · reserva nos demais dias', anos: [3, 4, 5] },
+    6: { titulo: 'Reserva livre', anos: null }
+  };
+  function textoRegra(id) { return (REGRAS[id] && REGRAS[id].titulo) || ''; }
+  function extrairAnos(turma) {
+    var t = String(turma || '').toLowerCase(), anos = [], m, re = /(\d)\s*(?:º|o|ª|a)?\s*ano/g;
+    while ((m = re.exec(t)) !== null) { var n = parseInt(m[1], 10); if (anos.indexOf(n) === -1) anos.push(n); }
+    return anos;
+  }
+  function diaSemana(dataStr) { try { return new Date(dataStr + 'T12:00:00').getDay(); } catch (e) { return -1; } }
+  function validarVinculo(carrinhoId, turma, dataStr) {
+    var regra = REGRAS[carrinhoId];
+    if (!regra || regra.anos === null) return null; /* carrinho 6: livre */
+    var anos = extrairAnos(turma);
+    if (carrinhoId === 5) {
+      var d = diaSemana(dataStr);
+      if (d !== 1 && d !== 2) return null; /* qua-dom: reserva livre */
+      if (anos.length === 0) return 'Carrinho 05 é do 3º ao 5º ano na segunda e terça. Informe a turma com o ano (ex.: 4º Ano A). No resto da semana é reserva livre.';
+      for (var i = 0; i < anos.length; i++) if (anos[i] === 3 || anos[i] === 4 || anos[i] === 5) return null;
+      return 'Carrinho 05 na segunda e terça é só para 3º ao 5º ano. Nos demais dias é reserva livre — se for seg/ter, troque para o carrinho do ano da turma.';
+    }
+    if (anos.length === 0) return nomeCarrinho(carrinhoId) + ' é do ' + regra.titulo + '. Informe a turma com o ano (ex.: ' + regra.anos[0] + 'º Ano A).';
+    for (var j = 0; j < anos.length; j++) if (regra.anos.indexOf(anos[j]) !== -1) return null;
+    return nomeCarrinho(carrinhoId) + ' é do ' + regra.titulo + ' — a turma “' + turma + '” não pertence a ele. Use o carrinho do ano correspondente ou o 06 (reserva).';
+  }
+  function fimChave(r) { return r.devolucaoData ? chave(r.devolucaoData, r.devolucaoAula || 1) : null; }
+  function inicioChave(r) { return chave(r.data, r.aula); }
+  /* Dois intervalos [ini,fim] se sobrepõem? fim null = aberto (infinito). */
+  function intervalosSobrepoem(iniA, fimA, iniB, fimB) {
+    if (fimA && iniB > fimA) return false;
+    if (fimB && iniA > fimB) return false;
+    return true;
+  }
+  function temConflito(carrinhoId, ini, fim, ignorarId) {
+    for (var i = 0; i < registros.length; i++) {
+      var r = registros[i];
+      if (r.carrinhoId !== carrinhoId) continue;
+      if (ignorarId && r.id === ignorarId) continue;
+      if (intervalosSobrepoem(ini, fim, inicioChave(r), fimChave(r))) return r;
+    }
+    return null;
+  }
+  function fimDataStr(r) { return r.devolucaoData || null; }
+  function cobreHoje(r, refHoje) {
+    var h = refHoje || hoje();
+    if (r.data > h) return false;
+    var f = fimDataStr(r);
+    if (!f) return true; /* aberto e já começou: ocupa até devolver */
+    return f >= h;
+  }
+  function ehFuturo(r, refHoje) { var h = refHoje || hoje(); return r.data > h; }
+  function ehEncerrado(r, refHoje) { var h = refHoje || hoje(); var f = fimDataStr(r); return !!f && f < h; }
+  function proximaReserva(id, refHoje) {
+    var h = refHoje || hoje(), prox = null;
+    for (var i = 0; i < registros.length; i++) {
+      var r = registros[i];
+      if (r.carrinhoId !== id) continue;
+      if (!ehFuturo(r, h) && !cobreHoje(r, h)) continue;
+      if (ehEncerrado(r, h)) continue;
+      if (!prox || inicioChave(r) < inicioChave(prox)) prox = r;
+    }
+    return prox;
+  }
   /* Apple §13 multimodal: háptico dispara no mesmo frame do visual, só em commit/erro/snap. */
   function haptic(kind) {
     try {
@@ -607,43 +689,76 @@ var SENHA = '';
     if (k === 'quota_exceeded') return 'Limite de registros atingido. Exclua registros antigos.';
     return 'Não foi possível salvar (' + (k || (e && e.message) || 'erro') + '). Tente de novo.';
   }
-  function badge(r) { return devolvido(r) ? '<span class="badge b-dev"><span class="dot"></span>Devolvido</span>' : '<span class="badge b-bad"><span class="dot"></span>Em uso</span>'; }
+  function badge(r) {
+    var h = hoje();
+    if (ehEncerrado(r, h)) return '<span class="badge b-dev"><span class="dot"></span>Devolvido</span>';
+    if (ehFuturo(r, h)) return '<span class="badge b-dev" style="background:var(--warn-bg);color:var(--warn)"><span class="dot"></span>Reservado</span>';
+    if (devolvido(r)) return '<span class="badge b-bad"><span class="dot"></span>Em uso · dev. ' + fmtData(r.devolucaoData) + '</span>';
+    return '<span class="badge b-bad"><span class="dot"></span>Em uso</span>';
+  }
   /* Erro inline de validação: nomeia o problema (Impeccable) + háptico de erro (Apple §13). */
   function campoInvalido(elErro, msg, foco) { haptic('error'); elErro.textContent = msg; if (foco && foco.focus) foco.focus(); }
 
   function renderPainel() {
-    var fora = 0, cb = 0;
-    carrinhos.forEach(function (car) { var r = registroAberto(car.id); if (r) { fora++; cb += r.quantidade; } });
+    var h = hoje(), fora = 0, cb = 0, reservados = 0;
+    carrinhos.forEach(function (car) {
+      var ativo = registroAtivoAgora(car.id, h);
+      if (ativo) { fora++; cb += ativo.quantidade; return; }
+      if (proximaReserva(car.id, h)) reservados++;
+    });
     $('stDisp').textContent = NUM - fora; $('stFora').textContent = fora; $('stCb').textContent = cb; $('stTotal').textContent = TOTAL;
     $('countCarr').textContent = NUM + ' carrinhos · ' + TOTAL + ' Chromebooks';
     var n = registros.length;
     $('countHist').textContent = n + (n === 1 ? ' registro' : ' registros');
-    $('footCount').textContent = fora === 0 ? 'Todos os carrinhos na sala · sincronizado' : fora + (fora === 1 ? ' carrinho fora' : ' carrinhos fora') + ' · ' + cb + ' Chromebooks fora';
+    var partes = [];
+    if (fora === 0 && reservados === 0) partes.push('Todos os carrinhos na sala · sincronizado');
+    else {
+      if (fora > 0) partes.push(fora + (fora === 1 ? ' carrinho fora' : ' carrinhos fora') + ' · ' + cb + ' Chromebooks fora');
+      if (reservados > 0) partes.push(reservados + (reservados === 1 ? ' com reserva futura' : ' com reserva futura'));
+      else if (fora === 0) partes.push('Nenhum fora agora · sincronizado');
+    }
+    $('footCount').textContent = partes.join(' · ');
   }
   var IC_LAPTOP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="11" rx="2"/><path d="M2 19h20"/></svg>';
   var IC_USER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6.5 8-6.5s8 2.5 8 6.5"/></svg>';
   var IC_CLOCK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
   function renderCarrinhos() {
+    var h = hoje();
     elCarts.innerHTML = carrinhos.map(function (car) {
-      var r = registroAberto(car.id), ini = (car.id - 1) * POR + 1, fim = car.id * POR;
+      var r = registroAtivoAgora(car.id, h), ini = (car.id - 1) * POR + 1, fim = car.id * POR;
       var faixa = 'CB-' + String(ini).padStart(3, '0') + ' a CB-' + String(fim).padStart(3, '0');
+      var usoPrevisto = textoRegra(car.id);
       var head = '<div class="cart-top"><div class="cart-id"><div class="cart-ic" aria-hidden="true">' + IC_LAPTOP + '</div><div><h3>' + car.nome + '</h3><p class="range">' + POR + ' Chromebooks · ' + faixa + '</p></div></div>';
-      if (!r) return '<article class="cart">' + head + '<span class="status ok"><span class="dot"></span>Disponível</span></div>' +
-        '<div class="btn"><button class="primary" data-acao="retirar" data-carrinho="' + car.id + '"' + (db ? '' : ' disabled') + '>Retirar carrinho</button></div></article>';
-      return '<article class="cart busy">' + head + '<span class="status busy"><span class="dot"></span>Em uso</span></div>' +
-        '<div class="cart-meta"><div class="meta-row">' + IC_USER + '<span>Turma <strong>' + esc(r.turma) + '</strong> · ' + esc(r.responsavel) + '</span></div>' +
-        '<div class="meta-row">' + IC_LAPTOP + '<span><strong>' + r.quantidade + '</strong> Chromebooks retirados</span></div>' +
-        '<div class="meta-row">' + IC_CLOCK + '<span>Retirada <strong>' + rotulo(r.data, r.aula) + '</strong></span></div></div>' +
-        '<div class="btn"><button class="primary" data-acao="devolver" data-id="' + r.id + '">Registrar devolução</button></div></article>';
+      var regraLinha = '<p class="range" style="margin:2px 0 0">Uso previsto: <strong>' + esc(usoPrevisto) + '</strong></p>';
+      if (r) {
+        var proxTxt = '';
+        var futuras = registros.filter(function (x) { return x.carrinhoId === car.id && ehFuturo(x, h) && x.id !== r.id; }).sort(function (a, b) { return inicioChave(a).localeCompare(inicioChave(b)); });
+        if (futuras.length) proxTxt = '<div class="meta-row">' + IC_CLOCK + '<span>Próx. reserva <strong>' + rotulo(futuras[0].data, futuras[0].aula) + '</strong> · ' + esc(futuras[0].turma) + '</span></div>';
+        var devTxt = devolvido(r) ? ' · dev. ' + rotulo(r.devolucaoData, r.devolucaoAula) : '';
+        return '<article class="cart busy">' + head + '<span class="status busy"><span class="dot"></span>Em uso</span></div>' + regraLinha +
+          '<div class="cart-meta"><div class="meta-row">' + IC_USER + '<span>Turma <strong>' + esc(r.turma) + '</strong> · ' + esc(r.responsavel) + '</span></div>' +
+          '<div class="meta-row">' + IC_LAPTOP + '<span><strong>' + r.quantidade + '</strong> Chromebooks retirados</span></div>' +
+          '<div class="meta-row">' + IC_CLOCK + '<span>Retirada <strong>' + rotulo(r.data, r.aula) + '</strong>' + esc(devTxt) + '</span></div>' + proxTxt + '</div>' +
+          '<div class="btn"><button class="primary" data-acao="devolver" data-id="' + r.id + '"' + (devolvido(r) ? ' disabled title="Devolução já marcada"' : '') + '>' + (devolvido(r) ? 'Devolução marcada' : 'Registrar devolução') + '</button></div></article>';
+      }
+      var prox = proximaReserva(car.id, h);
+      if (prox) {
+        return '<article class="cart">' + head + '<span class="status neutral"><span class="dot"></span>Reservado</span></div>' + regraLinha +
+          '<div class="cart-meta"><div class="meta-row">' + IC_CLOCK + '<span>Próx. uso <strong>' + rotulo(prox.data, prox.aula) + '</strong> · ' + esc(prox.turma) + '</span></div>' +
+          (devolvido(prox) ? '<div class="meta-row">' + IC_LAPTOP + '<span>Devolução marcada: <strong>' + rotulo(prox.devolucaoData, prox.devolucaoAula) + '</strong></span></div>' : '<div class="meta-row">' + IC_LAPTOP + '<span>Sem devolução marcada</span></div>') + '</div>' +
+          '<div class="btn"><button class="primary" data-acao="retirar" data-carrinho="' + car.id + '"' + (db ? '' : ' disabled') + '>Agendar outro período</button></div></article>';
+      }
+      return '<article class="cart">' + head + '<span class="status ok"><span class="dot"></span>Disponível</span></div>' + regraLinha +
+        '<div class="btn"><button class="primary" data-acao="retirar" data-carrinho="' + car.id + '"' + (db ? '' : ' disabled') + '>Retirar / agendar</button></div></article>';
     }).join('');
   }
   function filtrados() {
-    var q = elBusca.value.trim().toLowerCase(), f = elFiltro.value;
+    var q = elBusca.value.trim().toLowerCase(), f = elFiltro.value, h = hoje();
     return registros.filter(function (r) {
-      if (f === 'uso' && devolvido(r)) return false;
-      if (f === 'devolvido' && !devolvido(r)) return false;
+      if (f === 'uso' && ehEncerrado(r, h)) return false;
+      if (f === 'devolvido' && !ehEncerrado(r, h)) return false;
       return !q || (r.turma + ' ' + r.responsavel + ' ' + nomeCarrinho(r.carrinhoId) + ' ' + r.carrinhoId).toLowerCase().indexOf(q) !== -1;
-    }).sort(function (a, b) { return (chave(b.data, b.aula) + b.criadoEm).localeCompare(chave(a.data, a.aula) + a.criadoEm); });
+    }).sort(function (a, b) { return (chave(b.data, b.aula) + (b.criadoEm || '')).localeCompare(chave(a.data, a.aula) + (a.criadoEm || '')); });
   }
   function renderTabela() {
     var lista = filtrados();
@@ -665,21 +780,34 @@ var SENHA = '';
   function renderTudo() { renderPainel(); renderCarrinhos(); renderTabela(); }
 
   /* ---------- Formulário de retirada / edição ---------- */
+  function atualizarRegraHint() {
+    var el = $('regraHint');
+    if (!el) return;
+    var id = parseInt(elFCarrinho.value, 10);
+    el.textContent = id ? 'Uso previsto: ' + textoRegra(id) : '';
+  }
   function abrirForm(carrinhoId, reg) {
     editandoId = reg ? reg.id : null; elFErro.textContent = ''; elForm.reset();
-    var ops = '';
-    carrinhos.forEach(function (car) { if (reg ? car.id === reg.carrinhoId : !registroAberto(car.id)) ops += '<option value="' + car.id + '">' + car.nome + '</option>'; });
-    if (!ops) { avisar('Todos os carrinhos estão em uso.', false); return; }
+    var h = hoje();
+    var ops = carrinhos.map(function (car) {
+      var ativo = registroAtivoAgora(car.id, h), prox = !ativo && proximaReserva(car.id, h);
+      var extra = ativo ? ' (em uso)' : (prox ? ' (reservado ' + fmtData(prox.data) + ')' : ' (livre)');
+      var sel = (reg && car.id === reg.carrinhoId) || (!reg && carrinhoId === car.id) ? ' selected' : '';
+      return '<option value="' + car.id + '"' + sel + '>' + car.nome + extra + ' · ' + textoRegra(car.id) + '</option>';
+    }).join('');
     elFCarrinho.innerHTML = ops; elFCarrinho.disabled = !!reg;
+    atualizarRegraHint();
     if (reg) {
       elTitulo.textContent = 'Editar registro'; elBtnSalvar.textContent = 'Salvar alterações';
       elFCarrinho.value = reg.carrinhoId; elFTurma.value = reg.turma; elFResp.value = reg.responsavel; elFQtd.value = reg.quantidade;
       elFObs.value = reg.observacao || ''; elFData.value = reg.data; elFAula.value = reg.aula;
-      elLblDev.hidden = !devolvido(reg); elFDevData.value = reg.devolucaoData || ''; elFDevAula.value = reg.devolucaoAula || '';
+      elFDevData.value = reg.devolucaoData || ''; elFDevAula.value = reg.devolucaoAula || '';
+      atualizarRegraHint();
     } else {
-      elTitulo.textContent = 'Nova retirada'; elBtnSalvar.textContent = 'Registrar retirada';
+      elTitulo.textContent = 'Nova retirada / agendamento'; elBtnSalvar.textContent = 'Registrar retirada';
       if (carrinhoId) elFCarrinho.value = carrinhoId;
-      elFQtd.value = POR; elFData.value = hoje(); elLblDev.hidden = true;
+      elFQtd.value = POR; elFData.value = hoje(); elFDevData.value = ''; elFDevAula.value = '';
+      atualizarRegraHint();
     }
     elDlg.showModal(); elFTurma.focus();
   }
@@ -688,29 +816,41 @@ var SENHA = '';
     ev.preventDefault();
     var id = parseInt(elFCarrinho.value, 10), turma = elFTurma.value.trim(), resp = elFResp.value.trim();
     var qtd = parseInt(elFQtd.value, 10), data = elFData.value, aula = parseInt(elFAula.value, 10), obs = elFObs.value.trim();
+    var dd = elFDevData.value, daRaw = elFDevAula.value, da = daRaw === '' ? null : parseInt(daRaw, 10);
     if (!id) { campoInvalido(elFErro, 'Escolha um carrinho.'); return; }
     if (!turma) { campoInvalido(elFErro, 'Informe a turma.', elFTurma); return; }
     if (!resp) { campoInvalido(elFErro, 'Informe o responsável.', elFResp); return; }
     if (isNaN(qtd) || qtd < 1 || qtd > POR) { campoInvalido(elFErro, 'A quantidade deve ficar entre 1 e ' + POR + '.', elFQtd); return; }
     if (!data) { campoInvalido(elFErro, 'Informe a data da retirada.', elFData); return; }
     if (!(aula >= 1 && aula <= 5)) { campoInvalido(elFErro, 'Escolha a aula da retirada.', elFAula); return; }
+    /* Devolução já marcada na criação (permite agendar para frente com devolução). */
+    var temDev = !!(dd || daRaw !== '');
+    if (temDev) {
+      if (!dd) { campoInvalido(elFErro, 'Informe a data da devolução ou limpe os dois campos.', elFDevData); return; }
+      if (!(da >= 1 && da <= 5)) { campoInvalido(elFErro, 'Escolha a aula da devolução ou limpe os dois campos.', elFDevAula); return; }
+      if (chave(dd, da) < chave(data, aula)) { campoInvalido(elFErro, 'A devolução (' + rotulo(dd, da) + ') não pode ser antes da retirada (' + rotulo(data, aula) + ').'); return; }
+    }
+    var vinculo = validarVinculo(id, turma, data);
+    if (vinculo) { campoInvalido(elFErro, vinculo, elFTurma); return; }
+    var ini = chave(data, aula), fim = temDev ? chave(dd, da) : null;
+    var conflito = temConflito(id, ini, fim, editandoId);
+    if (conflito) {
+      var msg = nomeCarrinho(id) + ' já ocupado nesse período por ' + conflito.turma + ' (' + rotulo(conflito.data, conflito.aula) + (conflito.devolucaoData ? ' → ' + rotulo(conflito.devolucaoData, conflito.devolucaoAula) : ' · sem devolução') + '). Escolha outro carrinho ou período.';
+      campoInvalido(elFErro, msg); return;
+    }
     var corpo = { carrinhoId: id, turma: turma, responsavel: resp, quantidade: qtd, observacao: obs, data: data, aula: aula };
+    if (temDev) { corpo.devolucaoData = dd; corpo.devolucaoAula = da; corpo.devolvidoEm = Date.now(); }
     elBtnSalvar.disabled = true;
     try {
       if (editandoId !== null) {
-        var reg = achar(editandoId);
-        if (reg && devolvido(reg)) {
-          var dd = elFDevData.value, da = parseInt(elFDevAula.value, 10);
-          if (!dd || !(da >= 1 && da <= 5) || chave(dd, da) < chave(data, aula)) { campoInvalido(elFErro, 'Informe a devolução (data e aula) igual ou posterior à retirada.'); return; }
-          corpo.devolucaoData = dd; corpo.devolucaoAula = da;
-        }
+        if (!temDev) { corpo.devolucaoData = null; corpo.devolucaoAula = null; }
         await colecao.doc(editandoId).update(corpo);
         elDlg.close(); avisar('Registro atualizado.'); return;
       }
-      if (registroAberto(id)) { campoInvalido(elFErro, nomeCarrinho(id) + ' já está em uso.'); return; }
-      corpo.devolucaoData = null; corpo.devolucaoAula = null; corpo.criadoEm = Date.now();
+      if (!temDev) { corpo.devolucaoData = null; corpo.devolucaoAula = null; }
+      corpo.criadoEm = Date.now();
       await colecao.add(corpo);
-      elDlg.close(); avisar(nomeCarrinho(id) + ' retirado por ' + turma + '.');
+      elDlg.close(); avisar(nomeCarrinho(id) + (data > hoje() ? ' agendado para ' + fmtData(data) + '.' : ' retirado por ' + turma + '.'));
     } catch (e) { campoInvalido(elFErro, erroEscrita(e)); }
     finally { elBtnSalvar.disabled = false; }
   });
@@ -720,7 +860,9 @@ var SENHA = '';
     var r = achar(id); if (!r || devolvido(r)) return;
     devId = id; elDErro.textContent = '';
     $('devTitulo').textContent = 'Devolução · ' + nomeCarrinho(r.carrinhoId) + ' (' + r.turma + ')';
-    elDData.value = hoje(); elDAula.value = r.aula;
+    /* Se a retirada é futura, a devolução parte da data da retirada (antes corrigia para hoje e falhava). */
+    var base = r.data > hoje() ? r.data : hoje();
+    elDData.value = base; elDAula.value = r.aula;
     elDlgDev.showModal(); elDAula.focus();
   }
   $('formDev').addEventListener('submit', async function (ev) {
@@ -737,6 +879,12 @@ var SENHA = '';
   });
   $('dCancelar').addEventListener('click', function () { elDlgDev.close(); });
   $('btnCancelar').addEventListener('click', function () { elDlg.close(); });
+  elFCarrinho.addEventListener('change', atualizarRegraHint);
+  elFData.addEventListener('change', function () {
+    /* Se a retirada for para frente e a devolução estiver vazia, sugere a mesma data. */
+    if (elFData.value && !elFDevData.value) { elFDevData.value = elFData.value; }
+    atualizarRegraHint();
+  });
   elBtnNova.addEventListener('click', function () { abrirForm(null, null); });
   var btnVazio = $('btnVazioNova');
   if (btnVazio) btnVazio.addEventListener('click', function(){ abrirForm(null, null); });
@@ -867,8 +1015,10 @@ var SENHA = '';
 
   /* ---------- CSV ---------- */
   $('btnCsv').addEventListener('click', async function () {
+    var h = hoje();
     var linhas = [['Carrinho', 'Turma', 'Responsável', 'Quantidade', 'Retirada', 'Devolução', 'Status', 'Observação']].concat(filtrados().map(function (r) {
-      return [nomeCarrinho(r.carrinhoId), r.turma, r.responsavel, r.quantidade, rotulo(r.data, r.aula), devolvido(r) ? rotulo(r.devolucaoData, r.devolucaoAula) : '', devolvido(r) ? 'Devolvido' : 'Em uso', r.observacao || ''];
+      var st = ehEncerrado(r, h) ? 'Devolvido' : (ehFuturo(r, h) ? 'Reservado' : 'Em uso');
+      return [nomeCarrinho(r.carrinhoId), r.turma, r.responsavel, r.quantidade, rotulo(r.data, r.aula), devolvido(r) ? rotulo(r.devolucaoData, r.devolucaoAula) : '', st, r.observacao || ''];
     }));
     var csv = '﻿' + linhas.map(function (l) { return l.map(function (v) { return '"' + String(v).replace(/"/g, '""') + '"'; }).join(';'); }).join('\r\n');
     var url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
